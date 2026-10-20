@@ -6,10 +6,10 @@ on:
       - published
   push:
     branches:
-      - release/v2.2.26.post1
+      - release/v2.2.26.post2
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name || 'v2.2.26.post1' }}
+  group: publish-${{ github.event.release.tag_name || 'v2.2.26.post2' }}
   cancel-in-progress: false
 
 jobs:
@@ -19,15 +19,18 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || 'v2.2.26.post1' }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      RELEASE_TAG: ${{ github.event.release.tag_name || 'v2.2.26.post2' }}
       PATCH_RELEASE_NOTES: |
-        Based on pataar/ha-bambulab fix/csrf-endpoint at e4520a779be8a1c97dc2a2b00293c68afa8ae0aa.
+        Includes the earlier CSRF endpoint fix from pataar/ha-bambulab at e4520a779be8a1c97dc2a2b00293c68afa8ae0aa and a targeted email verification routing fix.
 
-        Corrects the Bambu Cloud CSRF URL from /api/sign-in/csrf to /api/csrf. The existing print-start trigger is preserved.
+        Selecting Request new code now switches both initial setup and integration options to the email/SMS verification form and submits the received code through the matching login flow. Authenticator-app TOTP verification continues through its existing flow when a replacement code is not requested.
 
-        bambu_lab.zip contains the integration files at its root, including the frontend bundle, with manifest version 2.2.26.post1. Extract into config/custom_components/bambu_lab/ for manual installation.
+        Retains the corrected /api/csrf endpoint and the existing print-start trigger.
 
-        Packaging checks verify tracked file inclusion, archived file contents, manifest version, ZIP integrity, Python syntax, the CSRF endpoint, and the print-start trigger. No live Home Assistant or Bambu Cloud login test was performed.
+        bambu_lab.zip contains the integration files at its root, including the frontend bundle, with manifest version 2.2.26.post2. Extract into config/custom_components/bambu_lab/ for manual installation.
+
+        The upstream pybambu test suite and setup/options login-routing regression tests must pass before publication. Packaging checks verify tracked file inclusion, archived file contents, manifest version, ZIP integrity, Python syntax, the CSRF endpoint, and the print-start trigger. No live Home Assistant or Bambu Cloud login test was performed.
     steps:
       - name: 🛍️ Checkout the repo
         uses: actions/checkout@v7
@@ -35,7 +38,13 @@ jobs:
       - name: 🐍 Setup Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.x"
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: python -m pip install -r tests/requirements.txt
+
+      - name: Run pybambu and login-routing regression tests
+        run: python -m pytest tests/pybambu tests/test_config_flow_code_request.py -v
 
       - name: 📝 Update manifest version
         run: |
@@ -79,7 +88,7 @@ jobs:
                   if name.endswith(".py"):
                       ast.parse(data, filename=name)
               assert archive.read("frontend/ha-bambulab-cards.js"), "Missing frontend bundle"
-              if version == "2.2.26.post1":
+              if version == "2.2.26.post2":
                   assert len(names) == 95, "Unexpected patch release file count"
                   constants = archive.read("pybambu/const.py")
                   assert b"https://bambulab.com/api/csrf" in constants
@@ -88,12 +97,13 @@ jobs:
           print(f"Validated {len(names)} integration files for {version}")
           PY
 
+      # This action stages new ordinary releases as drafts, uploads assets, then publishes.
       - name: ☁️ Upload zip to release
         uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: ${{ github.event_name == 'push' && 'v2.2.26.post1 — Bambu Cloud login fix' || github.event.release.name }}
+          name: ${{ github.event_name == 'push' && 'v2.2.26.post2 — Bambu Cloud email login fix' || github.event.release.name }}
           body: ${{ github.event_name == 'push' && env.PATCH_RELEASE_NOTES || github.event.release.body }}
           fail_on_unmatched_files: true
           files: "${{ github.workspace }}/custom_components/bambu_lab/bambu_lab.zip"

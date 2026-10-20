@@ -185,6 +185,9 @@ class BambuLabFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 if user_input.get('newCode', False):
                     await self.hass.async_add_executor_job(
                         self._bambu_cloud.request_new_code)
+                    # Requested codes use email/SMS login, not the TFA endpoint.
+                    self.authentication_type = 'verifyCode'
+                    errors['base'] = 'verifyCode'
 
                 elif self.authentication_type == 'verifyCode':
                     if user_input.get('verifyCode', '') != '':
@@ -687,6 +690,9 @@ class BambuOptionsFlowHandler(config_entries.OptionsFlow):
                 if user_input.get('newCode', False):
                     await self.hass.async_add_executor_job(
                         self._bambu_cloud.request_new_code)
+                    # Requested codes use email/SMS login, not the TFA endpoint.
+                    self.authentication_type = 'verifyCode'
+                    errors['base'] = 'verifyCode'
 
                 elif self.authentication_type == 'verifyCode':
                     if user_input.get('verifyCode', '') != '':
