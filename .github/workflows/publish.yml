@@ -4,6 +4,13 @@ on:
   release:
     types:
       - published
+  push:
+    branches:
+      - release/v2.2.26.post1
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || 'v2.2.26.post1' }}
+  cancel-in-progress: false
 
 jobs:
   release_zip_file:
@@ -11,6 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || 'v2.2.26.post1' }}
+      PATCH_RELEASE_NOTES: |
+        Based on pataar/ha-bambulab fix/csrf-endpoint at e4520a779be8a1c97dc2a2b00293c68afa8ae0aa.
+
+        Corrects the Bambu Cloud CSRF URL from /api/sign-in/csrf to /api/csrf. The existing print-start trigger is preserved.
+
+        bambu_lab.zip contains the integration files at its root, including the frontend bundle, with manifest version 2.2.26.post1. Extract into config/custom_components/bambu_lab/ for manual installation.
+
+        Packaging checks verify tracked file inclusion, archived file contents, manifest version, ZIP integrity, Python syntax, the CSRF endpoint, and the print-start trigger. No live Home Assistant or Bambu Cloud login test was performed.
     steps:
       - name: 🛍️ Checkout the repo
         uses: actions/checkout@v7
@@ -20,24 +37,63 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: 💿 Install Dependencies
-        run: pip install -r requirements.txt
-        working-directory: "${{ github.workspace }}/scripts"
-
       - name: 📝 Update manifest version
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix if it exists
-          sed -i 's/"version": "[^"]*"/"version": "'"$VERSION"'"/' '${{ github.workspace }}/custom_components/bambu_lab/manifest.json'
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          path = Path("custom_components/bambu_lab/manifest.json")
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          content, count = re.subn(r'("version"\s*:\s*)"[^"]*"',
+              lambda match: match[1] + json.dumps(version), path.read_text())
+          assert count == 1, "Expected exactly one manifest version"
+          path.write_text(content)
+          PY
 
       - name: 🤐 Copy and Zip
-        if: ${{ github.event_name == 'release' }}
         run: |
-          cd '${{ github.workspace }}/custom_components/bambu_lab'
+          cd custom_components/bambu_lab
           zip bambu_lab.zip -r ./
+
+      - name: Validate release archive
+        run: |
+          python - <<'PY'
+          import ast, json, os, subprocess, zipfile
+          from pathlib import Path
+
+          root = Path("custom_components/bambu_lab")
+          prefix = root.as_posix() + "/"
+          tracked = subprocess.check_output(["git", "ls-files", "-z", "--", prefix]).decode().split("\0")
+          expected = {name.removeprefix(prefix) for name in tracked if name}
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          with zipfile.ZipFile(root / "bambu_lab.zip") as archive:
+              assert archive.testzip() is None, "ZIP CRC failure"
+              names = [item.filename for item in archive.infolist() if not item.is_dir()]
+              assert len(names) == len(expected) and set(names) == expected, "ZIP file list differs from tracked integration files"
+              manifest = json.loads(archive.read("manifest.json"))
+              assert manifest["domain"] == "bambu_lab" and manifest["version"] == version
+              for name in names:
+                  data = archive.read(name)
+                  assert data == (root / name).read_bytes(), name
+                  if name.endswith(".py"):
+                      ast.parse(data, filename=name)
+              assert archive.read("frontend/ha-bambulab-cards.js"), "Missing frontend bundle"
+              if version == "2.2.26.post1":
+                  assert len(names) == 95, "Unexpected patch release file count"
+                  constants = archive.read("pybambu/const.py")
+                  assert b"https://bambulab.com/api/csrf" in constants
+                  assert b"https://bambulab.com/api/sign-in/csrf" not in constants
+                  assert b"event_print_started" in archive.read("device_trigger.py")
+          print(f"Validated {len(names)} integration files for {version}")
+          PY
 
       - name: ☁️ Upload zip to release
         uses: softprops/action-gh-release@v3.0.3
-        if: ${{ github.event_name == 'release' }}
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.event_name == 'push' && 'v2.2.26.post1 — Bambu Cloud login fix' || github.event.release.name }}
+          body: ${{ github.event_name == 'push' && env.PATCH_RELEASE_NOTES || github.event.release.body }}
+          fail_on_unmatched_files: true
           files: "${{ github.workspace }}/custom_components/bambu_lab/bambu_lab.zip"
